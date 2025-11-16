@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Town Maker</title>
+    <style>
+        @font-face {
+            font-family: 'ShuffleTown';
+            src: url('font/ShuffleTown-mini.woff') format('woff');
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            background-color: white;
+            overflow: hidden;
+            font-family: 'ShuffleTown', monospace;
+            position: relative;
+        }
+
+        .house {
+            position: absolute;
+            font-size: 80px;
+            line-height: 1;
+            user-select: none;
+            pointer-events: none;
+            white-space: nowrap;
+            animation: dropAndBounce 0.3s ease-out;
+            transform-origin: center bottom;
+        }
+
+        @keyframes dropAndBounce {
+            0% {
+                transform: translateY(-50px) scale(0.5);
+                opacity: 0;
+            }
+            60% {
+                transform: translateY(10px) scale(1.1);
+                opacity: 1;
+            }
+            80% {
+                transform: translateY(-5px) scale(0.95);
+            }
+            100% {
+                transform: translateY(0) scale(1);
+                opacity: 1;
+            }
+        }
+
+        .instruction {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            color: #999;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .meteor {
+            position: fixed;
+            width: 600px;
+            height: 600px;  
+            z-index: 2000;
+            pointer-events: none;
+            animation: meteorFall 2s ease-in forwards;
+        }
+
+        @keyframes meteorFall {
+            0% {
+                left: 100vw;
+                top: -100vh;
+                opacity: 1;
+            }
+            100% {
+                left: 50%;
+                top: 50vh;
+                transform: translate(-50%, -50%);
+                opacity: 1;
+            }
+        }
+
+        .house.blown-away {
+            animation: blowAway 1.5s ease-out forwards;
+        }
+
+        @keyframes blowAway {
+            0% {
+                transform: translate(0, 0) rotate(0deg);
+                opacity: 1;
+            }
+            100% {
+                transform: translate(var(--blow-x), var(--blow-y)) rotate(720deg);
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1 style="position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden;">Town Maker - キーボード入力で家を表示</h1>
+    <div class="instruction">キーボードを打つと家が表示されます</div>
+    <script>
+        const houses = [];
+        let gridCellWidth = 0;
+        let gridCellHeight = 0;
+        let gridCols = 0;
+        let gridRows = 0;
+        let availableCells = []; // 使用可能なセルのリスト [{col, row}, ...]
+        const padding = 20; // セル間の余白
+        let inputEnabled = true; // 入力を受け付けるかどうか
+        let watchMode = false; // 見守りモードのON/OFF
+        let watchModeInterval = null; // 見守りモードのインターバル
+
+        // グリッドを初期化
+        function initializeGrid(cellWidth, cellHeight) {
+            gridCellWidth = cellWidth + padding;
+            gridCellHeight = cellHeight + padding;
+            gridCols = Math.floor(window.innerWidth / gridCellWidth);
+            gridRows = Math.floor(window.innerHeight / gridCellHeight);
+            
+            // グリッドの中央を計算
+            const centerCol = Math.floor(gridCols / 2);
+            const centerRow = Math.floor(gridRows / 2);
+            
+            // すべてのセルを利用可能にする
+            const allCells = [];
+            for (let row = 0; row < gridRows; row++) {
+                for (let col = 0; col < gridCols; col++) {
+                    // 中央からの距離を計算（ユークリッド距離）
+                    const dx = col - centerCol;
+                    const dy = row - centerRow;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    allCells.push({ 
+                        col, 
+                        row, 
+                        distance: distance 
+                    });
+                }
+            }
+            
+            // 距離でソート（近い順）
+            allCells.sort((a, b) => a.distance - b.distance);
+            
+            // 同じ距離のセルをグループ化して、各グループ内でランダムにシャッフル
+            availableCells = [];
+            let currentDistance = -1;
+            let currentGroup = [];
+            
+            for (const cell of allCells) {
+                if (Math.abs(cell.distance - currentDistance) > 0.001) {
+                    // 距離が変わったので、現在のグループをシャッフルして追加
+                    if (currentGroup.length > 0) {
+                        // グループ内でランダムにシャッフル
+                        for (let i = currentGroup.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [currentGroup[i], currentGroup[j]] = [currentGroup[j], currentGroup[i]];
+                        }
+                        availableCells.push(...currentGroup);
+                    }
+                    currentGroup = [cell];
+                    currentDistance = cell.distance;
+                } else {
+                    currentGroup.push(cell);
+                }
+            }
+            
+            // 最後のグループも追加
+            if (currentGroup.length > 0) {
+                for (let i = currentGroup.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [currentGroup[i], currentGroup[j]] = [currentGroup[j], currentGroup[i]];
+                }
+                availableCells.push(...currentGroup);
+            }
+        }
+
+        // グリッドから空いているセルを取得
+        function getAvailableCell() {
+            if (availableCells.length === 0) {
+                return null; // すべてのセルが埋まっている
+            }
+            return availableCells.shift(); // 距離が近い順（配列の先頭）から取得
+        }
+
+        // セル座標を実際のピクセル座標に変換
+        function cellToPixel(cell) {
+            return {
+                x: cell.col * gridCellWidth,
+                y: cell.row * gridCellHeight
+            };
+        }
+
+        // 画面がいっぱいかどうかをチェック
+        function isScreenFull() {
+            return availableCells.length === 0;
+        }
+
+        // 隕石を表示して家を吹き飛ばす
+        function triggerMeteor() {
+            if (!inputEnabled) return; // 既に処理中の場合
+            inputEnabled = false;
+
+            // 隕石を表示
+            const meteor = document.createElement('img');
+            meteor.src = 'img/inseki.png';
+            meteor.className = 'meteor';
+            document.body.appendChild(meteor);
+
+            // 隕石が画面中央に到達したら家を吹き飛ばす
+            setTimeout(() => {
+                // 全ての家を吹き飛ばす
+                houses.forEach((house, index) => {
+                    // ランダムな方向に吹き飛ばす
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = Math.max(window.innerWidth, window.innerHeight) * 1.5;
+                    const blowX = Math.cos(angle) * distance;
+                    const blowY = Math.sin(angle) * distance;
+
+                    house.element.style.setProperty('--blow-x', blowX + 'px');
+                    house.element.style.setProperty('--blow-y', blowY + 'px');
+                    house.element.classList.add('blown-away');
+                });
+
+                // アニメーション終了後にリセット
+                setTimeout(() => {
+                    resetGame();
+                }, 1500);
+            }, 2000); // 隕石が画面中央に到達する時間
+        }
+
+        // ゲームをリセット
+        function resetGame() {
+            // 見守りモードを停止
+            stopWatchMode();
+
+            // 全ての家を削除
+            houses.forEach(house => {
+                if (house.element && house.element.parentNode) {
+                    house.element.parentNode.removeChild(house.element);
+                }
+            });
+            houses.length = 0;
+
+            // 隕石を削除
+            const meteor = document.querySelector('.meteor');
+            if (meteor) {
+                meteor.remove();
+            }
+
+            // グリッドをリセット
+            gridCellWidth = 0;
+            gridCellHeight = 0;
+            gridCols = 0;
+            gridRows = 0;
+            availableCells = [];
+
+            // 入力を受け付けるようにする
+            inputEnabled = true;
+        }
+
+        // 見守りモードを開始
+        function startWatchMode() {
+            if (watchMode) return; // 既に開始されている場合は何もしない
+            
+            watchMode = true;
+            
+            // 1秒ごとにランダムな文字で家を設置
+            watchModeInterval = setInterval(() => {
+                if (!inputEnabled) {
+                    // 入力が無効な場合は停止
+                    stopWatchMode();
+                    return;
+                }
+                
+                // ランダムな文字を生成（半角英数字・記号）
+                const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
+                const randomChar = chars[Math.floor(Math.random() * chars.length)];
+                createHouse(randomChar);
+            }, 1000);
+        }
+
+        // 見守りモードを停止
+        function stopWatchMode() {
+            watchMode = false;
+            if (watchModeInterval) {
+                clearInterval(watchModeInterval);
+                watchModeInterval = null;
+            }
+        }
+
+        // 見守りモードを切り替え
+        function toggleWatchMode() {
+            if (watchMode) {
+                stopWatchMode();
+            } else {
+                startWatchMode();
+            }
+        }
+
+
+        // 家を表示する関数
+        function createHouse(char) {
+            // 一時的にDOMに追加してサイズを測定
+            const tempHouse = document.createElement('div');
+            tempHouse.className = 'house';
+            tempHouse.textContent = char;
+            tempHouse.style.visibility = 'hidden';
+            tempHouse.style.position = 'absolute';
+            tempHouse.style.left = '0px';
+            tempHouse.style.top = '0px';
+            document.body.appendChild(tempHouse);
+            
+            const rect = tempHouse.getBoundingClientRect();
+            const width = rect.width || 80; // フォールバック
+            const height = rect.height || 80; // フォールバック
+            
+            // 一時要素を削除
+            document.body.removeChild(tempHouse);
+            
+            // グリッドが初期化されていない場合は初期化
+            if (gridCellWidth === 0 || gridCellHeight === 0) {
+                initializeGrid(width, height);
+            }
+            
+            // 利用可能なセルを取得
+            const cell = getAvailableCell();
+            
+            if (!cell) {
+                // すべてのセルが埋まっている場合は、隕石をトリガー
+                triggerMeteor();
+                return;
+            }
+            
+            // セル座標をピクセル座標に変換
+            const position = cellToPixel(cell);
+            
+            // 実際の家要素を作成
+            const house = document.createElement('div');
+            house.className = 'house';
+            house.textContent = char;
+            house.style.left = position.x + 'px';
+            house.style.top = position.y + 'px';
+            
+            document.body.appendChild(house);
+            
+            // 位置情報を保存
+            houses.push({
+                element: house,
+                cell: cell,
+                x: position.x,
+                y: position.y
+            });
+
+            // 画面がいっぱいになったら隕石をトリガー
+            if (isScreenFull()) {
+                triggerMeteor();
+            }
+        }
+
+        // キーボードイベントをリッスン
+        document.addEventListener('keydown', (e) => {
+            // スペースキーで見守りモードを切り替え
+            if (e.key === ' ' || e.key === 'Space') {
+                e.preventDefault();
+                toggleWatchMode();
+                return;
+            }
+
+            // 入力が無効な場合は何もしない
+            if (!inputEnabled) {
+                e.preventDefault();
+                return;
+            }
+
+            // 特殊キー（Shift, Ctrl, Alt, Metaなど）は無視
+            if (e.key.length === 1 || /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]$/.test(e.key)) {
+                e.preventDefault();
+                createHouse(e.key);
+            }
+        });
+
+        // ウィンドウリサイズ時の処理
+        window.addEventListener('resize', () => {
+            // グリッドが既に初期化されている場合は、新しいサイズで再初期化
+            if (gridCellWidth > 0 && gridCellHeight > 0 && houses.length > 0) {
+                // 既存の家のサイズを使用してグリッドを再初期化
+                const firstHouse = houses[0];
+                if (firstHouse && firstHouse.element) {
+                    const rect = firstHouse.element.getBoundingClientRect();
+                    
+                    // 既に使用されているセルを記録
+                    const usedCells = new Set();
+                    houses.forEach(house => {
+                        if (house.cell) {
+                            // 古いグリッド座標を新しいグリッド座標に変換
+                            const newCol = Math.floor(house.x / (rect.width + padding));
+                            const newRow = Math.floor(house.y / (rect.height + padding));
+                            
+                            // 新しいグリッド座標が有効な範囲内にある場合
+                            const newGridCols = Math.floor(window.innerWidth / (rect.width + padding));
+                            const newGridRows = Math.floor(window.innerHeight / (rect.height + padding));
+                            if (newCol >= 0 && newCol < newGridCols && newRow >= 0 && newRow < newGridRows) {
+                                usedCells.add(`${newCol},${newRow}`);
+                            }
+                        }
+                    });
+                    
+                    // グリッドを再初期化
+                    initializeGrid(rect.width, rect.height);
+                    
+                    // 使用されているセルをavailableCellsから削除
+                    availableCells = availableCells.filter(cell => {
+                        return !usedCells.has(`${cell.col},${cell.row}`);
+                    });
+                }
+            }
+        });
+    </script>
+</body>
+</html>
